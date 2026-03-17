@@ -1,0 +1,176 @@
+openapi: 3.1.0
+info:
+  title: LLM Intervene API
+  version: 0.1.0
+  description: |
+    面向上游系统的大模型过滤与引导服务。
+    使用方式为：模型调用前进行输入过滤与提示词强化，模型输出后进行二次过滤与规则校验。
+servers:
+  - url: http://localhost:3001
+paths:
+  /api/health:
+    get:
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+  /api/config/default:
+    get:
+      summary: 获取默认演示配置
+      responses:
+        "200":
+          description: 默认配置
+  /api/filter/preview:
+    post:
+      summary: 单独预览文本过滤效果
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, stage, filter]
+              properties:
+                text:
+                  type: string
+                stage:
+                  type: string
+                  enum: [input, output]
+                filter:
+                  $ref: "#/components/schemas/SensitiveWordConfig"
+      responses:
+        "200":
+          description: 过滤结果
+  /api/prompt/transform:
+    post:
+      summary: 输入过滤并强化提示词
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt, filter, rules]
+              properties:
+                prompt:
+                  type: string
+                filter:
+                  $ref: "#/components/schemas/SensitiveWordConfig"
+                rules:
+                  $ref: "#/components/schemas/PromptRuleSet"
+      responses:
+        "200":
+          description: 强化结果
+  /api/output/process:
+    post:
+      summary: 对模型输出执行过滤和规则校验
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [output, filter]
+              properties:
+                output:
+                  type: string
+                filter:
+                  $ref: "#/components/schemas/SensitiveWordConfig"
+                rules:
+                  $ref: "#/components/schemas/PromptRuleSet"
+      responses:
+        "200":
+          description: 输出处理结果
+  /api/rules/suggest:
+    post:
+      summary: 根据提示词生成规则建议
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt, rules]
+              properties:
+                prompt:
+                  type: string
+                rules:
+                  $ref: "#/components/schemas/PromptRuleSet"
+      responses:
+        "200":
+          description: 规则建议
+components:
+  schemas:
+    SensitiveWordEntry:
+      type: object
+      required: [term]
+      properties:
+        term:
+          type: string
+        replacement:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high]
+        tags:
+          type: array
+          items:
+            type: string
+    SensitiveWordConfig:
+      type: object
+      required: [enabled, action, replacementText, caseSensitive, customWords]
+      properties:
+        enabled:
+          type: boolean
+        action:
+          type: string
+          enum: [remove, replace, notify]
+        replacementText:
+          type: string
+        caseSensitive:
+          type: boolean
+        customWords:
+          type: array
+          items:
+            $ref: "#/components/schemas/SensitiveWordEntry"
+    RuleConstraint:
+      type: object
+      required: [requiredKeywords, forbiddenTopics, regexRules]
+      properties:
+        requiredKeywords:
+          type: array
+          items:
+            type: string
+        forbiddenTopics:
+          type: array
+          items:
+            type: string
+        regexRules:
+          type: array
+          items:
+            type: string
+        lengthLimit:
+          type: integer
+        jsonSchema:
+          type: string
+        customInstruction:
+          type: string
+    PromptRuleSet:
+      type: object
+      required: [outputFormat, domain, tone, emotion, audience, constraints]
+      properties:
+        outputFormat:
+          type: string
+          enum: [plain, markdown, json, html, bullet-list, custom]
+        domain:
+          type: string
+        tone:
+          type: string
+          enum: [formal, professional, friendly, academic, concise]
+        emotion:
+          type: string
+          enum: [neutral, calm, positive, serious, enthusiastic]
+        audience:
+          type: string
+        constraints:
+          $ref: "#/components/schemas/RuleConstraint"

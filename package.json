@@ -1,0 +1,15 @@
+{
+  "name": "llm-intervene",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace @llm-intervene/server",
+    "dev:web": "npm run dev --workspace @llm-intervene/web",
+    "build": "npm run build --workspace @llm-intervene/shared && npm run build --workspace @llm-intervene/server && npm run build --workspace @llm-intervene/web",
+    "check": "npm run check --workspace @llm-intervene/server && npm run check --workspace @llm-intervene/web"
+  }
+}
