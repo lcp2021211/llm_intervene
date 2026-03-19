@@ -11,6 +11,9 @@ export class RuleSuggestionService {
   suggest(prompt: string, rules: PromptRuleSet): RuleSuggestion[] {
     const suggestions: RuleSuggestion[] = [];
     const content = prompt.toLocaleLowerCase();
+    const customInstruction = rules.constraints.customInstruction?.trim() ?? "";
+    const appendInstruction = (instruction: string) =>
+      [customInstruction, instruction].filter(Boolean).join(" ");
 
     if (rules.outputFormat === "plain" && /json|字段|结构化|返回对象/.test(content)) {
       suggestions.push({
@@ -51,6 +54,58 @@ export class RuleSuggestionService {
         label: "建议切换为正式语气",
         reason: "当前内容偏业务或制度类文体，正式语气更匹配交付场景。",
         patch: { tone: "formal" }
+      });
+    }
+
+    if (rules.outputFormat === "json" && /方案|治理|架构|设计/u.test(prompt)) {
+      suggestions.push({
+        label: "建议固定 JSON 层级结构",
+        reason: "当前任务偏方案类，增加层级说明能让模型更稳定地输出 summary / steps / risks 这类结构。",
+        patch: {
+          constraints: {
+            ...rules.constraints,
+            customInstruction: appendInstruction("建议 JSON 至少包含 summary、steps、risks 三个层级。")
+          }
+        }
+      });
+    }
+
+    if (/安全|风控|合规|治理/u.test(prompt) && !/风险|边界/u.test(customInstruction)) {
+      suggestions.push({
+        label: "建议补充风险与边界说明",
+        reason: "当前主题带有明显治理或安全属性，明确要求输出风险和边界会更贴近真实交付场景。",
+        patch: {
+          constraints: {
+            ...rules.constraints,
+            customInstruction: appendInstruction("单独说明适用边界、潜在风险和落地前提。")
+          }
+        }
+      });
+    }
+
+    if (rules.outputFormat === "json" && rules.constraints.jsonSchema?.trim()) {
+      suggestions.push({
+        label: "建议要求只返回 JSON 正文",
+        reason: "当已经配置 JSON Schema 时，再强调不要附带解释文本，可以明显降低解析失败率。",
+        patch: {
+          constraints: {
+            ...rules.constraints,
+            customInstruction: appendInstruction("不要输出 JSON 之外的解释、前言或代码围栏。")
+          }
+        }
+      });
+    }
+
+    if (suggestions.length === 0 && prompt.trim()) {
+      suggestions.push({
+        label: "建议补充执行步骤要求",
+        reason: "当前规则已经较完整，再加一步骤化要求，通常可以让输出更具可执行性。",
+        patch: {
+          constraints: {
+            ...rules.constraints,
+            customInstruction: appendInstruction("回答时优先按步骤拆解，不要只给结论。")
+          }
+        }
       });
     }
 

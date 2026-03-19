@@ -19,8 +19,8 @@ export const defaultDemoConfiguration: DemoConfiguration = {
     emotion: "neutral",
     audience: "企业研发团队",
     constraints: {
-      requiredKeywords: ["接口", "安全"],
-      forbiddenTopics: ["医疗诊断", "政治宣传"],
+      requiredKeywords: [],
+      forbiddenTopics: [],
       regexRules: ["^(.|\\n){0,2000}$"],
       lengthLimit: 1200,
       jsonSchema: JSON.stringify(

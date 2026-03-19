@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import type {
   DemoConfiguration,
   FilteredTextResult,
@@ -30,7 +31,172 @@ const emptyOutputResponse: OutputProcessResponse = {
   validation: []
 };
 
+const normalizeLoadedConfig = (payload: DemoConfiguration): DemoConfiguration => ({
+  ...payload,
+  rules: {
+    ...payload.rules,
+    constraints: {
+      ...payload.rules.constraints,
+      requiredKeywords: [],
+      forbiddenTopics: []
+    }
+  }
+});
+
+const isSensitiveWordEntry = (entry: SensitiveWordEntry | null): entry is SensitiveWordEntry => entry !== null;
+
+const parseJsonWordEntries = (payload: unknown): SensitiveWordEntry[] => {
+  const toEntry = (value: unknown): SensitiveWordEntry | null => {
+    if (typeof value === "string") {
+      const term = value.trim();
+      return term ? { term } : null;
+    }
+
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    const termSource = record.term ?? record.word ?? record.keyword ?? record.sensitiveWord;
+    const replacementSource = record.replacement ?? record.replace ?? record.target;
+    const term = typeof termSource === "string" ? termSource.trim() : "";
+    const replacement = typeof replacementSource === "string" ? replacementSource.trim() : undefined;
+
+    if (!term) {
+      return null;
+    }
+
+    return replacement ? { term, replacement } : { term };
+  };
+
+  if (Array.isArray(payload)) {
+    return payload.map(toEntry).filter(isSensitiveWordEntry);
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+
+    if (Array.isArray(record.words)) {
+      return parseJsonWordEntries(record.words);
+    }
+
+    return Object.entries(record)
+      .map<SensitiveWordEntry | null>(([term, replacement]) => {
+        const normalizedTerm = term.trim();
+        if (!normalizedTerm) {
+          return null;
+        }
+
+        return {
+          term: normalizedTerm,
+          ...(typeof replacement === "string" && replacement.trim()
+            ? { replacement: replacement.trim() }
+            : {})
+        };
+      })
+      .filter(isSensitiveWordEntry);
+  }
+
+  return [];
+};
+
+const looksLikeHeader = (term: string, replacement: string) => {
+  const joined = `${term}|${replacement}`.toLocaleLowerCase();
+  return /term|replacement|敏感词|替换/.test(joined);
+};
+
+const parseLineWordEntries = (content: string): SensitiveWordEntry[] => {
+  const separators = ["\t", "|", ",", "，", ":", "："];
+
+  return content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#") && !line.startsWith("//"))
+    .map((line) => {
+      for (const separator of separators) {
+        if (!line.includes(separator)) {
+          continue;
+        }
+
+        const [rawTerm, ...rawRest] = line.split(separator);
+        const term = rawTerm.trim();
+        const replacement = rawRest.join(separator).trim();
+
+        if (!term || looksLikeHeader(term, replacement)) {
+          return null;
+        }
+
+        return {
+          term,
+          replacement: replacement || undefined
+        };
+      }
+
+      if (looksLikeHeader(line, "")) {
+        return null;
+      }
+
+      return { term: line };
+    })
+    .filter((entry): entry is SensitiveWordEntry => Boolean(entry));
+};
+
+const parseSensitiveWordFile = async (file: File): Promise<SensitiveWordEntry[]> => {
+  const content = await file.text();
+  const extension = file.name.split(".").pop()?.toLocaleLowerCase();
+
+  if (extension === "json") {
+    return parseJsonWordEntries(JSON.parse(content));
+  }
+
+  return parseLineWordEntries(content);
+};
+
+const mergeSensitiveWords = (
+  currentWords: SensitiveWordEntry[],
+  incomingWords: SensitiveWordEntry[],
+  fallbackReplacementText: string
+): SensitiveWordEntry[] => {
+  const merged = new Map<string, SensitiveWordEntry>();
+
+  for (const word of currentWords) {
+    const term = word.term.trim();
+    if (!term) {
+      continue;
+    }
+
+    merged.set(term, {
+      ...word,
+      term
+    });
+  }
+
+  for (const word of incomingWords) {
+    const term = word.term.trim();
+    if (!term) {
+      continue;
+    }
+
+    const existing = merged.get(term);
+    merged.set(term, {
+      ...existing,
+      ...word,
+      term,
+      replacement: word.replacement?.trim() || existing?.replacement || fallbackReplacementText
+    });
+  }
+
+  return Array.from(merged.values());
+};
+
+interface NotifyDialogState {
+  title: string;
+  description: string;
+  terms: string[];
+}
+
 function App() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [config, setConfig] = useState<DemoConfiguration | null>(null);
   const [prompt, setPrompt] = useState("请生成一个关于企业 AI 网关安全治理的 JSON 方案，覆盖接口约束和敏感词过滤。");
   const [modelOutput, setModelOutput] = useState(
@@ -50,36 +216,97 @@ function App() {
   const [outputResponse, setOutputResponse] = useState<OutputProcessResponse>(emptyOutputResponse);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [sensitiveWordSearch, setSensitiveWordSearch] = useState("");
+  const [notifyDialog, setNotifyDialog] = useState<NotifyDialogState | null>(null);
 
   useEffect(() => {
     api
       .getDefaultConfig()
-      .then((payload: DemoConfiguration) => setConfig(payload))
+      .then((payload: DemoConfiguration) => setConfig(normalizeLoadedConfig(payload)))
       .catch((requestError: unknown) =>
         setError(requestError instanceof Error ? requestError.message : "加载失败")
       )
       .finally(() => setLoading(false));
   }, []);
 
+  const updateConfig = (updater: (current: DemoConfiguration) => DemoConfiguration) => {
+    setConfig((current) => (current ? updater(current) : current));
+  };
+
   if (loading || !config) {
-    return <main className="shell"><p>正在加载演示配置...</p></main>;
+    return (
+      <main className="shell">
+        <p>正在加载演示配置...</p>
+      </main>
+    );
   }
 
-  const updateSensitiveWord = (index: number, patch: Partial<SensitiveWordEntry>) => {
-    const nextWords = config.filter.customWords.map((word: SensitiveWordEntry, wordIndex: number) =>
-      wordIndex === index ? { ...word, ...patch } : word
-    );
-    setConfig({
-      ...config,
-      filter: {
-        ...config.filter,
-        customWords: nextWords
+  const searchTerm = sensitiveWordSearch.trim().toLocaleLowerCase();
+  const filteredSensitiveWords = config.filter.customWords
+    .map((word, index) => ({ word, index }))
+    .filter(({ word }) => {
+      if (!searchTerm) {
+        return true;
       }
+
+      return (
+        word.term.toLocaleLowerCase().includes(searchTerm) ||
+        (word.replacement ?? "").toLocaleLowerCase().includes(searchTerm)
+      );
     });
+
+  const activeRuleCount =
+    (config.rules.domain.trim() ? 1 : 0) +
+    (config.rules.constraints.regexRules.length > 0 ? config.rules.constraints.regexRules.length : 0) +
+    (config.rules.constraints.lengthLimit ? 1 : 0) +
+    (config.rules.constraints.jsonSchema?.trim() ? 1 : 0) +
+    (config.rules.constraints.customInstruction?.trim() ? 1 : 0);
+
+  const visibleSuggestions = promptResponse?.suggestions ?? [];
+
+  const updateSensitiveWord = (index: number, patch: Partial<SensitiveWordEntry>) => {
+    updateConfig((current) => ({
+      ...current,
+      filter: {
+        ...current.filter,
+        customWords: current.filter.customWords.map((word, wordIndex) =>
+          wordIndex === index ? { ...word, ...patch } : word
+        )
+      }
+    }));
+  };
+
+  const removeSensitiveWord = (index: number) => {
+    updateConfig((current) => ({
+      ...current,
+      filter: {
+        ...current.filter,
+        customWords: current.filter.customWords.filter((_word, wordIndex) => wordIndex !== index)
+      }
+    }));
+  };
+
+  const addSensitiveWord = () => {
+    updateConfig((current) => ({
+      ...current,
+      filter: {
+        ...current.filter,
+        customWords: [
+          ...current.filter.customWords,
+          {
+            term: "",
+            replacement: current.filter.replacementText
+          }
+        ]
+      }
+    }));
   };
 
   const runTransform = async () => {
     setError(null);
+    setImportMessage(null);
+
     try {
       const payload = await api.transformPrompt({
         prompt,
@@ -87,7 +314,16 @@ function App() {
         rules: config.rules
       });
       setPromptResponse(payload);
-    } catch (requestError) {
+
+      if (payload.filteredPrompt.blocked) {
+        const uniqueTerms = Array.from(new Set(payload.filteredPrompt.matches.map((match) => match.term)));
+        setNotifyDialog({
+          title: "检测到需要校正的敏感词",
+          description: "当前策略为“提示用户校正”，请先修改提示词后再继续生成。",
+          terms: uniqueTerms
+        });
+      }
+    } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "提示词强化失败");
     }
   };
@@ -101,8 +337,42 @@ function App() {
         rules: config.rules
       });
       setOutputResponse(payload);
-    } catch (requestError) {
+    } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "输出处理失败");
+    }
+  };
+
+  const handleSensitiveWordFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const importedWords = await parseSensitiveWordFile(file);
+      if (importedWords.length === 0) {
+        throw new Error("词库文件中没有识别到可导入的敏感词。");
+      }
+
+      updateConfig((current) => ({
+        ...current,
+        filter: {
+          ...current.filter,
+          customWords: mergeSensitiveWords(
+            current.filter.customWords,
+            importedWords,
+            current.filter.replacementText
+          )
+        }
+      }));
+
+      setImportMessage(`已从 ${file.name} 导入 ${importedWords.length} 条敏感词记录。`);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "读取词库文件失败");
+    } finally {
+      event.target.value = "";
     }
   };
 
@@ -122,8 +392,8 @@ function App() {
             <span>敏感词规则</span>
           </div>
           <div>
-            <strong>{config.rules.constraints.requiredKeywords.length + config.rules.constraints.forbiddenTopics.length}</strong>
-            <span>内容约束</span>
+            <strong>{activeRuleCount}</strong>
+            <span>规则项</span>
           </div>
           <div>
             <strong>{config.rules.outputFormat.toUpperCase()}</strong>
@@ -133,6 +403,7 @@ function App() {
       </header>
 
       {error ? <p className="error-banner">{error}</p> : null}
+      {importMessage ? <p className="info-banner">{importMessage}</p> : null}
 
       <div className="dashboard-grid">
         <SectionCard eyebrow="01 / Filter" title="敏感词策略">
@@ -142,13 +413,13 @@ function App() {
               <select
                 value={config.filter.action}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     filter: {
-                      ...config.filter,
+                      ...current.filter,
                       action: event.target.value as DemoConfiguration["filter"]["action"]
                     }
-                  })
+                  }))
                 }
               >
                 <option value="replace">替换敏感词</option>
@@ -162,45 +433,82 @@ function App() {
               <input
                 value={config.filter.replacementText}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     filter: {
-                      ...config.filter,
+                      ...current.filter,
                       replacementText: event.target.value
                     }
-                  })
+                  }))
                 }
               />
             </label>
           </div>
 
-          <div className="word-list">
-            {config.filter.customWords.map((word: SensitiveWordEntry, index: number) => (
-              <div key={`${word.term}-${index}`} className="word-row">
-                <input value={word.term} onChange={(event) => updateSensitiveWord(index, { term: event.target.value })} />
-                <input
-                  value={word.replacement ?? ""}
-                  placeholder="替换文本"
-                  onChange={(event) => updateSensitiveWord(index, { replacement: event.target.value })}
-                />
-              </div>
-            ))}
+          <div className="filter-toolbar">
+            <label className="field compact-field">
+              <span>快速查找敏感词</span>
+              <input
+                value={sensitiveWordSearch}
+                placeholder="输入敏感词或替换文本关键字"
+                onChange={(event) => setSensitiveWordSearch(event.target.value)}
+              />
+            </label>
+
+            <div className="filter-toolbar-actions">
+              <span className="toolbar-note">当前显示 {filteredSensitiveWords.length} / {config.filter.customWords.length}</span>
+              <input
+                ref={fileInputRef}
+                className="hidden-file-input"
+                type="file"
+                accept=".txt,.csv,.tsv,.json"
+                onChange={handleSensitiveWordFileChange}
+              />
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                读入词库文件
+              </button>
+              <button className="primary-button" type="button" onClick={addSensitiveWord}>
+                添加敏感词
+              </button>
+            </div>
           </div>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() =>
-              setConfig({
-                ...config,
-                filter: {
-                  ...config.filter,
-                  customWords: [...config.filter.customWords, { term: "新增敏感词", replacement: config.filter.replacementText }]
-                }
-              })
-            }
-          >
-            添加敏感词
-          </button>
+
+          <p className="helper-copy">支持导入 `txt / csv / tsv / json`。文本格式可使用“敏感词,替换文本”或“敏感词|替换文本”。</p>
+
+          <div className="word-table">
+            <div className="word-table-head">
+              <span>敏感词</span>
+              <span>替换文本</span>
+              <span>操作</span>
+            </div>
+            <div className="word-table-body">
+              {filteredSensitiveWords.length > 0 ? (
+                filteredSensitiveWords.map(({ word, index }) => (
+                  <div key={index} className="word-row">
+                    <input
+                      value={word.term}
+                      placeholder="请输入敏感词"
+                      onChange={(event) => updateSensitiveWord(index, { term: event.target.value })}
+                    />
+                    <input
+                      value={word.replacement ?? ""}
+                      placeholder="替换文本"
+                      onChange={(event) => updateSensitiveWord(index, { replacement: event.target.value })}
+                    />
+                    <button className="row-remove" type="button" onClick={() => removeSensitiveWord(index)}>
+                      删除
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state">没有匹配到对应的敏感词，请尝试更换关键字。</div>
+              )}
+            </div>
+          </div>
         </SectionCard>
 
         <SectionCard eyebrow="02 / Rules" title="规则引擎配置">
@@ -210,13 +518,13 @@ function App() {
               <select
                 value={config.rules.outputFormat}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       outputFormat: event.target.value as DemoConfiguration["rules"]["outputFormat"]
                     }
-                  })
+                  }))
                 }
               >
                 <option value="plain">Plain Text</option>
@@ -233,13 +541,13 @@ function App() {
               <input
                 value={config.rules.domain}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       domain: event.target.value
                     }
-                  })
+                  }))
                 }
               />
             </label>
@@ -249,13 +557,13 @@ function App() {
               <input
                 value={config.rules.audience}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       audience: event.target.value
                     }
-                  })
+                  }))
                 }
               />
             </label>
@@ -265,13 +573,13 @@ function App() {
               <select
                 value={config.rules.tone}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       tone: event.target.value as DemoConfiguration["rules"]["tone"]
                     }
-                  })
+                  }))
                 }
               >
                 <option value="formal">正式</option>
@@ -287,13 +595,13 @@ function App() {
               <select
                 value={config.rules.emotion}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       emotion: event.target.value as DemoConfiguration["rules"]["emotion"]
                     }
-                  })
+                  }))
                 }
               >
                 <option value="neutral">中性</option>
@@ -310,94 +618,81 @@ function App() {
                 type="number"
                 value={config.rules.constraints.lengthLimit ?? ""}
                 onChange={(event) =>
-                  setConfig({
-                    ...config,
+                  updateConfig((current) => ({
+                    ...current,
                     rules: {
-                      ...config.rules,
+                      ...current.rules,
                       constraints: {
-                        ...config.rules.constraints,
+                        ...current.rules.constraints,
                         lengthLimit: event.target.value ? Number(event.target.value) : undefined
                       }
                     }
-                  })
+                  }))
                 }
               />
             </label>
           </div>
 
           <TagEditor
-            label="必须包含关键词"
-            values={config.rules.constraints.requiredKeywords}
-            placeholder="回车添加关键词"
-            onChange={(values: string[]) =>
-              setConfig({
-                ...config,
-                rules: {
-                  ...config.rules,
-                  constraints: {
-                    ...config.rules.constraints,
-                    requiredKeywords: values
-                  }
-                }
-              })
-            }
-          />
-
-          <TagEditor
-            label="禁止主题"
-            values={config.rules.constraints.forbiddenTopics}
-            placeholder="回车添加禁止主题"
-            onChange={(values: string[]) =>
-              setConfig({
-                ...config,
-                rules: {
-                  ...config.rules,
-                  constraints: {
-                    ...config.rules.constraints,
-                    forbiddenTopics: values
-                  }
-                }
-              })
-            }
-          />
-
-          <TagEditor
             label="正则规则"
             values={config.rules.constraints.regexRules}
-            placeholder="回车添加正则"
+            placeholder="回车添加正则规则"
             onChange={(values: string[]) =>
-              setConfig({
-                ...config,
+              updateConfig((current) => ({
+                ...current,
                 rules: {
-                  ...config.rules,
+                  ...current.rules,
                   constraints: {
-                    ...config.rules.constraints,
+                    ...current.rules.constraints,
                     regexRules: values
                   }
                 }
-              })
+              }))
             }
           />
 
-          <label className="field">
-            <span>JSON Schema / 自定义说明</span>
-            <textarea
-              rows={8}
-              value={config.rules.constraints.jsonSchema ?? ""}
-              onChange={(event) =>
-                setConfig({
-                  ...config,
-                  rules: {
-                    ...config.rules,
-                    constraints: {
-                      ...config.rules.constraints,
-                      jsonSchema: event.target.value
+          <div className="grid two-columns">
+            <label className="field">
+              <span>JSON Schema</span>
+              <textarea
+                rows={9}
+                value={config.rules.constraints.jsonSchema ?? ""}
+                onChange={(event) =>
+                  updateConfig((current) => ({
+                    ...current,
+                    rules: {
+                      ...current.rules,
+                      constraints: {
+                        ...current.rules.constraints,
+                        jsonSchema: event.target.value
+                      }
                     }
-                  }
-                })
-              }
-            />
-          </label>
+                  }))
+                }
+              />
+            </label>
+
+            <label className="field">
+              <span>补充规则说明</span>
+              <textarea
+                rows={9}
+                value={config.rules.constraints.customInstruction ?? ""}
+                placeholder="例如：优先给出落地步骤，不要输出无依据结论。"
+                onChange={(event) =>
+                  updateConfig((current) => ({
+                    ...current,
+                    rules: {
+                      ...current.rules,
+                      constraints: {
+                        ...current.rules.constraints,
+                        customInstruction: event.target.value
+                      }
+                    }
+                  }))
+                }
+              />
+            </label>
+          </div>
         </SectionCard>
       </div>
 
@@ -419,11 +714,14 @@ function App() {
           <div className="result-grid">
             <article className="result-panel">
               <h3>过滤结果</h3>
+              {promptResponse?.filteredPrompt.blocked ? <p className="panel-badge">已触发校正规则</p> : null}
               <pre>{promptResponse?.filteredPrompt.filteredText ?? "点击右上角开始生成。"}</pre>
             </article>
             <article className="result-panel">
               <h3>强化后的提示词</h3>
-              <pre>{promptResponse?.strengthenedPrompt ?? "规则引擎会把格式、领域、语气等要求拼装到提示词中。"}</pre>
+              <pre>
+                {promptResponse?.strengthenedPrompt ?? "规则引擎会把格式、领域、语气等要求拼装到提示词中。"}
+              </pre>
             </article>
           </div>
 
@@ -438,13 +736,17 @@ function App() {
             </article>
             <article className="result-panel">
               <h3>智能建议</h3>
-              <ul>
-                {(promptResponse?.suggestions ?? []).map((item: RuleSuggestion) => (
-                  <li key={item.label}>
-                    <strong>{item.label}</strong>：{item.reason}
-                  </li>
-                ))}
-              </ul>
+              {visibleSuggestions.length > 0 ? (
+                <ul>
+                  {visibleSuggestions.map((item: RuleSuggestion, index: number) => (
+                    <li key={`${item.label}-${index}`}>
+                      <strong>{item.label}</strong>：{item.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="empty-hint">点击“生成强化提示词”后，这里会基于当前提示词给出可执行建议。</p>
+              )}
             </article>
           </div>
         </SectionCard>
@@ -471,8 +773,8 @@ function App() {
             <article className="result-panel">
               <h3>规则校验结果</h3>
               <ul>
-                {outputResponse.validation.map((item) => (
-                  <li key={`${item.type}-${item.message}`} className={item.ok ? "ok" : "bad"}>
+                {outputResponse.validation.map((item, index) => (
+                  <li key={`${item.type}-${item.message}-${index}`} className={item.ok ? "ok" : "bad"}>
                     [{item.ok ? "PASS" : "FAIL"}] {item.message}
                   </li>
                 ))}
@@ -481,6 +783,26 @@ function App() {
           </div>
         </SectionCard>
       </div>
+
+      {notifyDialog ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="notify-title">
+            <p className="eyebrow">Sensitive Word Notice</p>
+            <h2 id="notify-title">{notifyDialog.title}</h2>
+            <p className="modal-copy">{notifyDialog.description}</p>
+            <div className="modal-tags">
+              {notifyDialog.terms.map((term) => (
+                <span key={term} className="modal-tag">
+                  {term}
+                </span>
+              ))}
+            </div>
+            <button className="primary-button" type="button" onClick={() => setNotifyDialog(null)}>
+              我知道了
+            </button>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

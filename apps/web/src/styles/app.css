@@ -161,6 +161,10 @@ textarea {
   margin-bottom: 16px;
 }
 
+.compact-field {
+  margin-bottom: 0;
+}
+
 .field span {
   font-size: 0.92rem;
   color: var(--muted);
@@ -184,7 +188,9 @@ textarea {
 
 .primary-button,
 .ghost-button,
-.tag {
+.tag,
+.row-remove,
+.tag-remove {
   border: 0;
   cursor: pointer;
   transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
@@ -207,20 +213,96 @@ textarea {
 
 .primary-button:hover,
 .ghost-button:hover,
-.tag:hover {
+.row-remove:hover,
+.tag:hover,
+.tag-remove:hover {
   transform: translateY(-1px);
 }
 
-.word-list {
+.filter-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.filter-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.toolbar-note,
+.helper-copy,
+.empty-hint,
+.modal-copy {
+  color: var(--muted);
+}
+
+.toolbar-note {
+  font-size: 0.9rem;
+}
+
+.helper-copy {
+  margin: 0 0 14px;
+  line-height: 1.6;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.word-table {
+  border: 1px solid rgba(111, 86, 61, 0.18);
+  border-radius: 20px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.word-table-head,
+.word-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 96px;
+  gap: 12px;
+  align-items: center;
+}
+
+.word-table-head {
+  padding: 14px 16px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: rgba(242, 210, 191, 0.56);
+  border-bottom: 1px solid rgba(111, 86, 61, 0.18);
+}
+
+.word-table-body {
+  max-height: 340px;
+  overflow: auto;
+  padding: 12px;
   display: grid;
   gap: 10px;
-  margin-bottom: 14px;
 }
 
 .word-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  padding: 4px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.row-remove {
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(196, 92, 46, 0.12);
+  color: var(--accent-deep);
+}
+
+.empty-state {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--muted);
 }
 
 .tag-editor {
@@ -238,10 +320,24 @@ textarea {
 }
 
 .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
   background: #f4e3d8;
   color: var(--accent-deep);
+}
+
+.tag-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  color: white;
+  background: var(--accent-deep);
 }
 
 .tag-editor input {
@@ -267,6 +363,16 @@ textarea {
   line-height: 1.7;
 }
 
+.panel-badge {
+  display: inline-flex;
+  align-items: center;
+  margin: 12px 0 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: white;
+  background: linear-gradient(135deg, #ba4a34, #7e241c);
+}
+
 .ok {
   color: var(--ok);
 }
@@ -283,6 +389,53 @@ textarea {
   background: linear-gradient(135deg, #ba4a34, #7e241c);
 }
 
+.info-banner {
+  margin-top: 18px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  color: #194933;
+  background: linear-gradient(135deg, #d6efe2, #f0fbf5);
+  border: 1px solid rgba(29, 111, 71, 0.15);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(35, 23, 14, 0.34);
+  backdrop-filter: blur(10px);
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(111, 86, 61, 0.18);
+  border-radius: 28px;
+  background: linear-gradient(145deg, rgba(255, 247, 239, 0.98), rgba(255, 255, 255, 0.92));
+  box-shadow: 0 22px 60px rgba(84, 48, 24, 0.18);
+}
+
+.modal-card h2 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+}
+
+.modal-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 22px;
+}
+
+.modal-tag {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #f4e3d8;
+  color: var(--accent-deep);
+}
+
 @media (max-width: 1080px) {
   .hero,
   .dashboard-grid,
@@ -294,5 +447,22 @@ textarea {
 
   .hero h1 {
     max-width: 100%;
+  }
+}
+
+@media (max-width: 720px) {
+  .filter-toolbar,
+  .word-table-head,
+  .word-row {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-toolbar-actions {
+    display: grid;
+    justify-content: stretch;
+  }
+
+  .filter-toolbar-actions {
+    justify-content: stretch;
   }
 }

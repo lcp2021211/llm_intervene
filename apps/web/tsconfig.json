@@ -5,6 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
+    "noEmit": true,
     "paths": {
       "@llm-intervene/shared": [
         "../../packages/shared/src/index.ts"

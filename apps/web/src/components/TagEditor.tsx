@@ -6,17 +6,25 @@ interface TagEditorProps {
 }
 
 export function TagEditor({ label, values, placeholder, onChange }: TagEditorProps) {
-  const remove = (value: string) => onChange(values.filter((item) => item !== value));
+  const remove = (index: number) => onChange(values.filter((_item, itemIndex) => itemIndex !== index));
 
   return (
     <label className="field">
       <span>{label}</span>
       <div className="tag-editor">
         <div className="tag-list">
-          {values.map((value) => (
-            <button key={value} type="button" className="tag" onClick={() => remove(value)}>
-              {value}
-            </button>
+          {values.map((value, index) => (
+            <span key={`${value}-${index}`} className="tag">
+              <span>{value}</span>
+              <button
+                type="button"
+                className="tag-remove"
+                aria-label={`删除 ${value}`}
+                onClick={() => remove(index)}
+              >
+                ×
+              </button>
+            </span>
           ))}
         </div>
         <input
