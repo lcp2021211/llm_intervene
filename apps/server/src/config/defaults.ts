@@ -17,12 +17,11 @@ export const defaultDemoConfiguration: DemoConfiguration = {
     domain: "计算机",
     tone: "formal",
     emotion: "neutral",
-    audience: "企业研发团队",
+    audience: "",
     constraints: {
       requiredKeywords: [],
       forbiddenTopics: [],
       regexRules: ["^(.|\\n){0,2000}$"],
-      lengthLimit: 1200,
       jsonSchema: JSON.stringify(
         {
           type: "object",

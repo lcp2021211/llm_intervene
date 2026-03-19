@@ -5,7 +5,6 @@ import type {
   FilteredTextResult,
   OutputProcessResponse,
   PromptTransformResponse,
-  RuleSuggestion,
   SensitiveWordEntry
 } from "@llm-intervene/shared";
 import { SectionCard } from "./components/SectionCard.tsx";
@@ -31,17 +30,72 @@ const emptyOutputResponse: OutputProcessResponse = {
   validation: []
 };
 
+const CONFIG_STORAGE_KEY = "llm-intervene.console.config.v1";
+const BUILT_IN_LIBRARY_PATH = "/default-sensitive-word-library.csv";
+
+type StoredConfiguration = Partial<DemoConfiguration> & {
+  filter?: Partial<DemoConfiguration["filter"]>;
+  rules?: Partial<DemoConfiguration["rules"]> & {
+    constraints?: Partial<DemoConfiguration["rules"]["constraints"]>;
+  };
+};
+
 const normalizeLoadedConfig = (payload: DemoConfiguration): DemoConfiguration => ({
   ...payload,
   rules: {
     ...payload.rules,
+    audience: "",
     constraints: {
       ...payload.rules.constraints,
+      lengthLimit: undefined,
       requiredKeywords: [],
       forbiddenTopics: []
     }
   }
 });
+
+const loadStoredConfiguration = (): StoredConfiguration | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    return JSON.parse(raw) as StoredConfiguration;
+  } catch {
+    return null;
+  }
+};
+
+const mergeDemoConfiguration = (
+  defaultConfig: DemoConfiguration,
+  storedConfig: StoredConfiguration | null
+): DemoConfiguration => {
+  if (!storedConfig) {
+    return normalizeLoadedConfig(defaultConfig);
+  }
+
+  return normalizeLoadedConfig({
+    filter: {
+      ...defaultConfig.filter,
+      ...storedConfig.filter,
+      customWords: storedConfig.filter?.customWords ?? defaultConfig.filter.customWords
+    },
+    rules: {
+      ...defaultConfig.rules,
+      ...storedConfig.rules,
+      constraints: {
+        ...defaultConfig.rules.constraints,
+        ...storedConfig.rules?.constraints,
+        regexRules: storedConfig.rules?.constraints?.regexRules ?? defaultConfig.rules.constraints.regexRules
+      }
+    }
+  });
+};
 
 const isSensitiveWordEntry = (entry: SensitiveWordEntry | null): entry is SensitiveWordEntry => entry !== null;
 
@@ -195,6 +249,12 @@ interface NotifyDialogState {
   terms: string[];
 }
 
+interface ConfirmDialogState {
+  title: string;
+  description: string;
+  confirmLabel: string;
+}
+
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [config, setConfig] = useState<DemoConfiguration | null>(null);
@@ -219,16 +279,27 @@ function App() {
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [sensitiveWordSearch, setSensitiveWordSearch] = useState("");
   const [notifyDialog, setNotifyDialog] = useState<NotifyDialogState | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [selectedSensitiveWordIndexes, setSelectedSensitiveWordIndexes] = useState<number[]>([]);
 
   useEffect(() => {
     api
       .getDefaultConfig()
-      .then((payload: DemoConfiguration) => setConfig(normalizeLoadedConfig(payload)))
+      .then((payload: DemoConfiguration) => setConfig(mergeDemoConfiguration(payload, loadStoredConfiguration())))
       .catch((requestError: unknown) =>
         setError(requestError instanceof Error ? requestError.message : "加载失败")
       )
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!config || typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+  }, [config]);
 
   const updateConfig = (updater: (current: DemoConfiguration) => DemoConfiguration) => {
     setConfig((current) => (current ? updater(current) : current));
@@ -256,14 +327,18 @@ function App() {
       );
     });
 
+  const visibleSensitiveWordIndexes = filteredSensitiveWords.map(({ index }) => index);
+  const selectedVisibleCount = visibleSensitiveWordIndexes.filter((index) =>
+    selectedSensitiveWordIndexes.includes(index)
+  ).length;
+  const allVisibleSelected =
+    visibleSensitiveWordIndexes.length > 0 && selectedVisibleCount === visibleSensitiveWordIndexes.length;
+
   const activeRuleCount =
     (config.rules.domain.trim() ? 1 : 0) +
-    (config.rules.constraints.regexRules.length > 0 ? config.rules.constraints.regexRules.length : 0) +
-    (config.rules.constraints.lengthLimit ? 1 : 0) +
-    (config.rules.constraints.jsonSchema?.trim() ? 1 : 0) +
+    config.rules.constraints.regexRules.length +
+    (config.rules.outputFormat === "json" && config.rules.constraints.jsonSchema?.trim() ? 1 : 0) +
     (config.rules.constraints.customInstruction?.trim() ? 1 : 0);
-
-  const visibleSuggestions = promptResponse?.suggestions ?? [];
 
   const updateSensitiveWord = (index: number, patch: Partial<SensitiveWordEntry>) => {
     updateConfig((current) => ({
@@ -285,6 +360,11 @@ function App() {
         customWords: current.filter.customWords.filter((_word, wordIndex) => wordIndex !== index)
       }
     }));
+    setSelectedSensitiveWordIndexes((current) =>
+      current
+        .filter((selectedIndex) => selectedIndex !== index)
+        .map((selectedIndex) => (selectedIndex > index ? selectedIndex - 1 : selectedIndex))
+    );
   };
 
   const addSensitiveWord = () => {
@@ -303,9 +383,54 @@ function App() {
     }));
   };
 
+  const toggleSensitiveWordSelection = (index: number) => {
+    setSelectedSensitiveWordIndexes((current) =>
+      current.includes(index) ? current.filter((item) => item !== index) : [...current, index]
+    );
+  };
+
+  const toggleSelectAllVisibleSensitiveWords = () => {
+    setSelectedSensitiveWordIndexes((current) => {
+      if (allVisibleSelected) {
+        return current.filter((index) => !visibleSensitiveWordIndexes.includes(index));
+      }
+
+      return Array.from(new Set([...current, ...visibleSensitiveWordIndexes])).sort((left, right) => left - right);
+    });
+  };
+
+  const removeSelectedSensitiveWords = () => {
+    if (selectedSensitiveWordIndexes.length === 0) {
+      return;
+    }
+    setConfirmDialog({
+      title: "确认批量删除敏感词",
+      description: `当前共选中 ${selectedSensitiveWordIndexes.length} 条敏感词，确认后将立即删除且不可恢复。`,
+      confirmLabel: "确认删除"
+    });
+  };
+
+  const confirmRemoveSelectedSensitiveWords = () => {
+    if (selectedSensitiveWordIndexes.length === 0) {
+      setConfirmDialog(null);
+      return;
+    }
+
+    updateConfig((current) => ({
+      ...current,
+      filter: {
+        ...current.filter,
+        customWords: current.filter.customWords.filter((_word, wordIndex) => !selectedSensitiveWordIndexes.includes(wordIndex))
+      }
+    }));
+    setSelectedSensitiveWordIndexes([]);
+    setConfirmDialog(null);
+  };
+
   const runTransform = async () => {
     setError(null);
     setImportMessage(null);
+    setCopySuccess(false);
 
     try {
       const payload = await api.transformPrompt({
@@ -373,6 +498,53 @@ function App() {
       setError(requestError instanceof Error ? requestError.message : "读取词库文件失败");
     } finally {
       event.target.value = "";
+    }
+  };
+
+  const loadBuiltInSensitiveWords = async () => {
+    setError(null);
+
+    try {
+      const response = await fetch(BUILT_IN_LIBRARY_PATH);
+      if (!response.ok) {
+        throw new Error("读取内置词库失败。");
+      }
+
+      const importedWords = parseLineWordEntries(await response.text());
+      if (importedWords.length === 0) {
+        throw new Error("内置词库为空。");
+      }
+
+      updateConfig((current) => ({
+        ...current,
+        filter: {
+          ...current.filter,
+          customWords: mergeSensitiveWords(
+            current.filter.customWords,
+            importedWords,
+            current.filter.replacementText
+          )
+        }
+      }));
+
+      setImportMessage(`已加载内置词库，共 ${importedWords.length} 条敏感词记录。`);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "加载内置词库失败");
+    }
+  };
+
+  const copyStrengthenedPrompt = async () => {
+    const content = promptResponse?.strengthenedPrompt?.trim();
+    if (!content) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopySuccess(true);
+      window.setTimeout(() => setCopySuccess(false), 1800);
+    } catch {
+      setError("复制失败，请检查浏览器是否允许访问剪贴板。");
     }
   };
 
@@ -455,8 +627,11 @@ function App() {
               />
             </label>
 
-            <div className="filter-toolbar-actions">
+            <div className="filter-toolbar-meta">
               <span className="toolbar-note">当前显示 {filteredSensitiveWords.length} / {config.filter.customWords.length}</span>
+            </div>
+
+            <div className="filter-toolbar-actions">
               <input
                 ref={fileInputRef}
                 className="hidden-file-input"
@@ -467,6 +642,13 @@ function App() {
               <button
                 className="ghost-button"
                 type="button"
+                onClick={loadBuiltInSensitiveWords}
+              >
+                加载内置词库
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
               >
                 读入词库文件
@@ -474,13 +656,29 @@ function App() {
               <button className="primary-button" type="button" onClick={addSensitiveWord}>
                 添加敏感词
               </button>
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={selectedSensitiveWordIndexes.length === 0}
+                onClick={removeSelectedSensitiveWords}
+              >
+                批量删除
+              </button>
             </div>
           </div>
 
-          <p className="helper-copy">支持导入 `txt / csv / tsv / json`。文本格式可使用“敏感词,替换文本”或“敏感词|替换文本”。</p>
+          <p className="helper-copy">支持导入 `txt / csv / tsv / json`。文本格式可使用“敏感词,替换文本”或“敏感词|替换文本”；也可以直接加载内置默认词库。</p>
 
           <div className="word-table">
             <div className="word-table-head">
+              <label className="word-select-all">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisibleSensitiveWords}
+                />
+                <span>全选</span>
+              </label>
               <span>敏感词</span>
               <span>替换文本</span>
               <span>操作</span>
@@ -489,6 +687,13 @@ function App() {
               {filteredSensitiveWords.length > 0 ? (
                 filteredSensitiveWords.map(({ word, index }) => (
                   <div key={index} className="word-row">
+                    <label className="word-select">
+                      <input
+                        type="checkbox"
+                        checked={selectedSensitiveWordIndexes.includes(index)}
+                        onChange={() => toggleSensitiveWordSelection(index)}
+                      />
+                    </label>
                     <input
                       value={word.term}
                       placeholder="请输入敏感词"
@@ -512,7 +717,7 @@ function App() {
         </SectionCard>
 
         <SectionCard eyebrow="02 / Rules" title="规则引擎配置">
-          <div className="grid three-columns">
+          <div className="grid two-columns">
             <label className="field">
               <span>输出格式</span>
               <select
@@ -546,22 +751,6 @@ function App() {
                     rules: {
                       ...current.rules,
                       domain: event.target.value
-                    }
-                  }))
-                }
-              />
-            </label>
-
-            <label className="field">
-              <span>目标受众</span>
-              <input
-                value={config.rules.audience}
-                onChange={(event) =>
-                  updateConfig((current) => ({
-                    ...current,
-                    rules: {
-                      ...current.rules,
-                      audience: event.target.value
                     }
                   }))
                 }
@@ -612,25 +801,6 @@ function App() {
               </select>
             </label>
 
-            <label className="field">
-              <span>长度上限</span>
-              <input
-                type="number"
-                value={config.rules.constraints.lengthLimit ?? ""}
-                onChange={(event) =>
-                  updateConfig((current) => ({
-                    ...current,
-                    rules: {
-                      ...current.rules,
-                      constraints: {
-                        ...current.rules.constraints,
-                        lengthLimit: event.target.value ? Number(event.target.value) : undefined
-                      }
-                    }
-                  }))
-                }
-              />
-            </label>
           </div>
 
           <TagEditor
@@ -652,26 +822,27 @@ function App() {
           />
 
           <div className="grid two-columns">
-            <label className="field">
-              <span>JSON Schema</span>
-              <textarea
-                rows={9}
-                value={config.rules.constraints.jsonSchema ?? ""}
-                onChange={(event) =>
-                  updateConfig((current) => ({
-                    ...current,
-                    rules: {
-                      ...current.rules,
-                      constraints: {
-                        ...current.rules.constraints,
-                        jsonSchema: event.target.value
+            {config.rules.outputFormat === "json" ? (
+              <label className="field">
+                <span>JSON Schema</span>
+                <textarea
+                  rows={9}
+                  value={config.rules.constraints.jsonSchema ?? ""}
+                  onChange={(event) =>
+                    updateConfig((current) => ({
+                      ...current,
+                      rules: {
+                        ...current.rules,
+                        constraints: {
+                          ...current.rules.constraints,
+                          jsonSchema: event.target.value
+                        }
                       }
-                    }
-                  }))
-                }
-              />
-            </label>
-
+                    }))
+                  }
+                />
+              </label>
+            ) : null}
             <label className="field">
               <span>补充规则说明</span>
               <textarea
@@ -713,40 +884,25 @@ function App() {
 
           <div className="result-grid">
             <article className="result-panel">
-              <h3>过滤结果</h3>
+              <h3>输入过滤后</h3>
               {promptResponse?.filteredPrompt.blocked ? <p className="panel-badge">已触发校正规则</p> : null}
               <pre>{promptResponse?.filteredPrompt.filteredText ?? "点击右上角开始生成。"}</pre>
             </article>
             <article className="result-panel">
-              <h3>强化后的提示词</h3>
+              <div className="result-panel-head">
+                <h3>规则注入后</h3>
+                <button
+                  className="ghost-button small-button"
+                  type="button"
+                  onClick={copyStrengthenedPrompt}
+                  disabled={!promptResponse?.strengthenedPrompt}
+                >
+                  {copySuccess ? "已复制" : "复制文本"}
+                </button>
+              </div>
               <pre>
                 {promptResponse?.strengthenedPrompt ?? "规则引擎会把格式、领域、语气等要求拼装到提示词中。"}
               </pre>
-            </article>
-          </div>
-
-          <div className="result-grid">
-            <article className="result-panel">
-              <h3>应用规则</h3>
-              <ul>
-                {(promptResponse?.instructionBlocks ?? []).map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-            <article className="result-panel">
-              <h3>智能建议</h3>
-              {visibleSuggestions.length > 0 ? (
-                <ul>
-                  {visibleSuggestions.map((item: RuleSuggestion, index: number) => (
-                    <li key={`${item.label}-${index}`}>
-                      <strong>{item.label}</strong>：{item.reason}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="empty-hint">点击“过滤及规则注入”后，这里会基于当前提示词给出可执行建议。</p>
-              )}
             </article>
           </div>
         </SectionCard>
@@ -800,6 +956,24 @@ function App() {
             <button className="primary-button" type="button" onClick={() => setNotifyDialog(null)}>
               我知道了
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmDialog ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <p className="eyebrow">Confirm Action</p>
+            <h2 id="confirm-title">{confirmDialog.title}</h2>
+            <p className="modal-copy">{confirmDialog.description}</p>
+            <div className="modal-actions">
+              <button className="ghost-button" type="button" onClick={() => setConfirmDialog(null)}>
+                取消
+              </button>
+              <button className="primary-button danger-button" type="button" onClick={confirmRemoveSelectedSensitiveWords}>
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

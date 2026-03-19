@@ -23,9 +23,9 @@ export class PromptRuleEngine {
       `你是一名严格遵守输出约束的助手。`,
       `回答领域限制：仅围绕“${rules.domain || "未限定领域"}”展开，偏离主题时主动收束。`,
       `语气要求：使用${this.toneLabel(rules.tone)}语气，并保持${this.emotionLabel(rules.emotion)}情感色彩。`,
-      `目标受众：${rules.audience || "通用用户"}。`,
+      rules.audience.trim() ? `目标受众：${rules.audience}。` : "",
       this.formatInstruction(rules),
-      this.constraintInstruction(rules)
+      ...this.constraintInstructions(rules)
     ].filter(Boolean) as string[];
 
     const strengthenedPrompt = [basePrompt.trim(), "", "请严格补充遵循以下生成规则：", ...blocks.map((block, index) => `${index + 1}. ${block}`)]
@@ -39,25 +39,6 @@ export class PromptRuleEngine {
     const results: ValidationResult[] = [];
 
     results.push(this.validateFormat(output, rules));
-    results.push(this.validateDomain(output, rules));
-    results.push(this.validateTone(output, rules));
-
-    for (const keyword of rules.constraints.requiredKeywords) {
-      results.push({
-        type: "keyword",
-        ok: output.includes(keyword),
-        message: output.includes(keyword) ? `已包含关键词“${keyword}”。` : `缺少要求关键词“${keyword}”。`
-      });
-    }
-
-    for (const topic of rules.constraints.forbiddenTopics) {
-      const contains = output.includes(topic);
-      results.push({
-        type: "topic",
-        ok: !contains,
-        message: contains ? `命中禁止主题“${topic}”。` : `未命中禁止主题“${topic}”。`
-      });
-    }
 
     for (const pattern of rules.constraints.regexRules) {
       try {
@@ -74,17 +55,6 @@ export class PromptRuleEngine {
           message: `正则表达式无效：${pattern}`
         });
       }
-    }
-
-    if (rules.constraints.lengthLimit) {
-      results.push({
-        type: "length",
-        ok: output.length <= rules.constraints.lengthLimit,
-        message:
-          output.length <= rules.constraints.lengthLimit
-            ? `输出长度 ${output.length}，满足上限 ${rules.constraints.lengthLimit}。`
-            : `输出长度 ${output.length}，超过上限 ${rules.constraints.lengthLimit}。`
-      });
     }
 
     if (rules.outputFormat === "json" && rules.constraints.jsonSchema?.trim()) {
@@ -111,7 +81,7 @@ export class PromptRuleEngine {
     }
   }
 
-  private constraintInstruction(rules: PromptRuleSet): string {
+  private constraintInstructions(rules: PromptRuleSet): string[] {
     const instructions: string[] = [];
 
     if (rules.constraints.requiredKeywords.length > 0) {
@@ -124,40 +94,85 @@ export class PromptRuleEngine {
       instructions.push(`控制总长度不超过 ${rules.constraints.lengthLimit} 字符。`);
     }
     if (rules.constraints.regexRules.length > 0) {
-      instructions.push("输出需满足预设正则规则。");
+      instructions.push(`输出需满足以下正则规则：\n${rules.constraints.regexRules.map((pattern, index) => `  (${index + 1}) ${pattern}`).join("\n")}`);
     }
     if (rules.constraints.jsonSchema?.trim()) {
-      instructions.push("JSON 输出还需符合提供的 JSON Schema。");
+      instructions.push(`JSON 输出还需符合以下 JSON Schema：\n${rules.constraints.jsonSchema.trim()}`);
     }
     if (rules.constraints.customInstruction?.trim()) {
       instructions.push(`附加要求：${rules.constraints.customInstruction.trim()}`);
     }
 
-    return instructions.join("");
+    return instructions;
   }
 
   private validateFormat(output: string, rules: PromptRuleSet): ValidationResult {
-    if (rules.outputFormat !== "json") {
-      return {
-        type: "format",
-        ok: true,
-        message: `当前未启用严格 ${rules.outputFormat} 结构校验。`
-      };
-    }
+    switch (rules.outputFormat) {
+      case "json":
+        try {
+          JSON.parse(output);
+          return {
+            type: "format",
+            ok: true,
+            message: "输出是合法 JSON。"
+          };
+        } catch {
+          return {
+            type: "format",
+            ok: false,
+            message: "输出不是合法 JSON。"
+          };
+        }
+      case "markdown": {
+        const hasMarkdownSyntax =
+          /(^|\n)#{1,6}\s.+/u.test(output) ||
+          /(^|\n)([-*+]|\d+\.)\s.+/u.test(output) ||
+          /\*\*[^*]+\*\*/u.test(output) ||
+          /\[[^\]]+\]\([^)]+\)/u.test(output) ||
+          /(^|\n)>\s.+/u.test(output);
 
-    try {
-      JSON.parse(output);
-      return {
-        type: "format",
-        ok: true,
-        message: "输出是合法 JSON。"
-      };
-    } catch {
-      return {
-        type: "format",
-        ok: false,
-        message: "输出不是合法 JSON。"
-      };
+        return {
+          type: "format",
+          ok: hasMarkdownSyntax,
+          message: hasMarkdownSyntax
+            ? "输出符合 Markdown 结构特征。"
+            : "输出未体现 Markdown 结构特征，至少应包含标题、列表、强调或链接等 Markdown 标记。"
+        };
+      }
+      case "html": {
+        const hasHtmlSyntax =
+          /<([a-z][\w-]*)(\s[^>]*)?>/iu.test(output) &&
+          (/<\/([a-z][\w-]*)>/iu.test(output) || /\/>/u.test(output));
+
+        return {
+          type: "format",
+          ok: hasHtmlSyntax,
+          message: hasHtmlSyntax ? "输出符合 HTML 片段特征。" : "输出未体现 HTML 标签结构。"
+        };
+      }
+      case "bullet-list": {
+        const listCount = (output.match(/(^|\n)([-*+]|\d+\.)\s.+/gu) ?? []).length;
+        return {
+          type: "format",
+          ok: listCount >= 2,
+          message: listCount >= 2 ? "输出符合条目列表结构。" : "输出未形成清晰的条目列表，至少应包含两条列表项。"
+        };
+      }
+      case "custom":
+        return {
+          type: "format",
+          ok: output.trim().length > 0,
+          message: output.trim().length > 0 ? "输出已生成，可继续结合自定义规则校验。" : "输出为空。"
+        };
+      default: {
+        const looksLikeStructuredOutput =
+          output.trim().startsWith("{") || output.trim().startsWith("<") || /(^|\n)([-*+]|\d+\.)\s.+/u.test(output);
+        return {
+          type: "format",
+          ok: !looksLikeStructuredOutput,
+          message: !looksLikeStructuredOutput ? "输出符合纯文本特征。" : "输出包含明显结构化标记，不符合纯文本预期。"
+        };
+      }
     }
   }
 
