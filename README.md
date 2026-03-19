@@ -91,3 +91,32 @@ npm run dev:web
 
 - 接入说明文档：`docs/api-guide.md`
 - OpenAPI 描述：`docs/openapi.yaml`
+- 打包与部署：`docs/package-deployment.md`
+
+## 交付打包
+
+项目已内置离线交付脚本，会将以下内容一并打包：
+
+- 前端静态资源
+- 后端构建产物
+- 生产依赖
+- Node.js 运行时
+- npm
+- 启动脚本
+
+默认打包当前平台：
+
+```bash
+npm run package:release
+```
+
+指定目标平台：
+
+```bash
+npm run package:release -- --target=darwin-arm64
+npm run package:release -- --target=darwin-x64
+npm run package:release -- --target=linux-x64
+npm run package:release -- --target=win32-x64
+```
+
+打包结果输出到 `release/` 目录，客户机器无需额外安装 Node 或 npm。
