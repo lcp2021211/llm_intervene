@@ -8,9 +8,9 @@ import type {
   RuleSuggestion,
   SensitiveWordEntry
 } from "@llm-intervene/shared";
-import { SectionCard } from "./components/SectionCard";
-import { TagEditor } from "./components/TagEditor";
-import { api } from "./lib/api";
+import { SectionCard } from "./components/SectionCard.tsx";
+import { TagEditor } from "./components/TagEditor.tsx";
+import { api } from "./lib/api.ts";
 import "./styles/app.css";
 
 const emptyFilterResult: FilteredTextResult = {
@@ -383,7 +383,7 @@ function App() {
           <p className="eyebrow">LLM Filter & Guidance Platform</p>
           <h1>大模型过滤与引导控制台</h1>
           <p className="hero-copy">
-            在模型调用前后统一执行敏感词过滤、提示词强化与规则校验，帮助上游系统拿到更稳定、可控、可审计的输入输出。
+            在模型调用前后统一执行敏感词过滤、规则注入与规则校验，帮助上游系统拿到更稳定、可控、可审计的输入输出。
           </p>
         </div>
         <div className="hero-metrics">
@@ -699,10 +699,10 @@ function App() {
       <div className="playground-grid">
         <SectionCard
           eyebrow="03 / Prompt"
-          title="输入过滤与提示词强化"
+          title="输入过滤与规则注入"
           actions={
             <button className="primary-button" type="button" onClick={runTransform}>
-              生成强化提示词
+              过滤及规则注入
             </button>
           }
         >
@@ -745,7 +745,7 @@ function App() {
                   ))}
                 </ul>
               ) : (
-                <p className="empty-hint">点击“生成强化提示词”后，这里会基于当前提示词给出可执行建议。</p>
+                <p className="empty-hint">点击“过滤及规则注入”后，这里会基于当前提示词给出可执行建议。</p>
               )}
             </article>
           </div>
